@@ -103,7 +103,7 @@ func (f *MACAddressesRemovedFields) UnmarshalBinary(b []byte) error {
 	f.NumberOfMACAddresses = b[0]
 	offset := 1
 
-	for range int(f.NumberOfMACAddresses) {
+	for n := 0; n < int(f.NumberOfMACAddresses); n++ {
 		if l < offset+6 {
 			return io.ErrUnexpectedEOF
 		}
