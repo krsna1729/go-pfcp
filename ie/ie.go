@@ -478,11 +478,7 @@ func (i *IE) valueAs3GPPTimestamp() (time.Time, error) {
 // the buffer after calling this function. When you use the buffer somewhere
 // else, copy it before calling this function.
 func Parse(b []byte) (*IE, error) {
-	i := &IE{}
-	if err := i.UnmarshalBinary(b); err != nil {
-		return nil, err
-	}
-	return i, nil
+	return parseIE(b, 0, &parseBudget{})
 }
 
 // ParseMultiIEs decodes multiple IEs at a time.
@@ -490,28 +486,68 @@ func Parse(b []byte) (*IE, error) {
 // When you don't know the number of IEs, this is the only way to decode them.
 // See benchmarks in diameter_test.go for the detail.
 //
+// The wire header's Length field advances the input. A grouped IE is not
+// walked a second time just to find the end of its payload.
+//
 // Note that this function uses the given bytes directly, so not safe to use
 // the buffer after calling this function. When you use the buffer somewhere
 // else, copy it before calling this function.
 func ParseMultiIEs(b []byte) ([]*IE, error) {
-	var ies []*IE
-	for {
-		if len(b) == 0 {
-			break
-		}
+	return parseMultiIEs(b, 0, &parseBudget{})
+}
 
-		i, err := Parse(b)
+// Bounds on untrusted PFCP input. A legitimate session nests a few grouped
+// IEs; the wire is already bounded to 64 KiB, but a 4-byte grouped IE can be
+// nested thousands of times, and every level costs a recursive call.
+const (
+	maxGroupedIEDepth = 16
+	maxIEsPerMessage  = 4096
+)
+
+type parseBudget struct {
+	ies int
+}
+
+func parseMultiIEs(b []byte, depth int, budget *parseBudget) ([]*IE, error) {
+	var ies []*IE
+	for len(b) > 0 {
+		i, err := parseIE(b, depth, budget)
 		if err != nil {
 			return nil, err
 		}
 		ies = append(ies, i)
-		b = b[i.MarshalLen():]
+
+		// Length is the complete payload length, including the Enterprise ID
+		// when the IE is vendor-specific. UnmarshalBinary validated it against
+		// the input, so the advance is safe and O(1).
+		n := 4 + int(i.Length)
+		if n <= 0 || n > len(b) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		b = b[n:]
 	}
 	return ies, nil
 }
 
+func parseIE(b []byte, depth int, budget *parseBudget) (*IE, error) {
+	if budget.ies >= maxIEsPerMessage {
+		return nil, ErrTooManyIEs
+	}
+	budget.ies++
+
+	i := &IE{}
+	if err := i.unmarshalBinary(b, depth, budget); err != nil {
+		return nil, err
+	}
+	return i, nil
+}
+
 // UnmarshalBinary parses b into IE.
 func (i *IE) UnmarshalBinary(b []byte) error {
+	return i.unmarshalBinary(b, 0, &parseBudget{})
+}
+
+func (i *IE) unmarshalBinary(b []byte, depth int, budget *parseBudget) error {
 	l := len(b)
 	if l < 4 {
 		return io.ErrUnexpectedEOF
@@ -545,8 +581,11 @@ func (i *IE) UnmarshalBinary(b []byte) error {
 	i.Payload = b[offset : offset+end]
 
 	if i.IsGrouped() {
+		if depth >= maxGroupedIEDepth {
+			return ErrTooDeep
+		}
 		var err error
-		i.ChildIEs, err = ParseMultiIEs(i.Payload)
+		i.ChildIEs, err = parseMultiIEs(i.Payload, depth+1, budget)
 		if err != nil {
 			return err
 		}

@@ -13,6 +13,8 @@ import (
 var (
 	ErrTooShortToParse = errors.New("too short to decode as GTP")
 	ErrInvalidLength   = errors.New("length value is invalid")
+	ErrTooManyIEs      = errors.New("too many IEs in one message")
+	ErrTooDeep         = errors.New("grouped IE nesting is too deep")
 
 	ErrInvalidType = errors.New("invalid type")
 	ErrIENotFound  = errors.New("could not find the specified IE in a grouped IE")
